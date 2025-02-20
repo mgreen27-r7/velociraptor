@@ -21,6 +21,7 @@ import (
 	vql_subsystem "www.velocidex.com/golang/velociraptor/vql"
 	"www.velocidex.com/golang/vfilter"
 	"www.velocidex.com/golang/vfilter/arg_parser"
+	"www.velocidex.com/golang/vfilter/types"
 )
 
 type ProfilePluginArgs struct {
@@ -195,6 +196,26 @@ func writeTraceProfile(
 
 type ProfilePlugin struct{}
 
+func (self *ProfilePlugin) Tag(
+	ctx context.Context,
+	scope vfilter.Scope,
+	writer debug.ProfileWriterInfo,
+	output_chan chan types.Row) {
+	in := make(chan types.Row)
+
+	go func() {
+		defer close(in)
+		writer.ProfileWriter(ctx, scope, in)
+	}()
+
+	for row := range in {
+		row_dict, ok := row.(*ordereddict.Dict)
+		if ok {
+			output_chan <- row_dict.Set("Profile", writer.Name)
+		}
+	}
+}
+
 func (self *ProfilePlugin) Call(ctx context.Context,
 	scope vfilter.Scope,
 	args *ordereddict.Dict) <-chan vfilter.Row {
@@ -203,6 +224,9 @@ func (self *ProfilePlugin) Call(ctx context.Context,
 	go func() {
 		defer close(output_chan)
 		defer vql_subsystem.RegisterMonitor("profile", args)()
+
+		in := make(chan *ordereddict.Dict)
+		defer close(in)
 
 		err := vql_subsystem.CheckAccess(scope, acls.MACHINE_STATE)
 		if err != nil {
@@ -275,7 +299,7 @@ func (self *ProfilePlugin) Call(ctx context.Context,
 			}
 			for _, writer := range debug.GetProfileWriters() {
 				if re.MatchString(writer.Name) {
-					writer.ProfileWriter(ctx, scope, output_chan)
+					self.Tag(ctx, scope, writer, output_chan)
 				}
 			}
 		}
